@@ -1,12 +1,34 @@
 [project]
 name = "llm-proxy"
 version = "0.1.0"
-description = "OpenAI-compatible chat completions proxy with a custom request rewrite hook"
+description = "OpenAI 兼容的聊天补全代理：先按自定义规则重写请求体，再转发给上游供应商"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
     "httpx>=0.27",
     "python-dotenv>=1.2.3",
+    "pyyaml>=6.0.3",
     "uvicorn[standard]>=0.30",
+]
+
+# uv tool install 之后会生成这两个命令，实现在 cli.py。
+[project.scripts]
+llm-proxy = "cli:main"
+llm-proxy-fake-upstream = "cli:fake_upstream"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# 代码就是根目录下这几个 .py 文件，没有包目录，所以用 only-include 显式点名要打进 wheel 的文件
+# （hatchling 默认去找和项目名同名的 llm_proxy 目录，找不到会直接报错）。
+# 不变式：新增或改名根目录的模块时，这份清单必须同步，否则装出来的工具里会缺文件。
+[tool.hatch.build.targets.wheel]
+only-include = [
+    "main.py",
+    "rewrite.py",
+    "model_caller.py",
+    "cli.py",
+    "dev_fake_upstream.py",
 ]

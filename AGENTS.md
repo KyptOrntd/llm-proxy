@@ -11,9 +11,11 @@
 
     main.py                FastAPI 应用：路由、请求体校验、请求头处理、转发
     rewrite.py             请求重写钩子 —— 业务逻辑写这里
+    model_caller.py        模型调用器：按 provider_id 调供应商 /chat/completions，原生响应原样返回
+    cli.py                 命令行入口：uv tool 装出来的 llm-proxy，只负责把 uvicorn 拉起来
     dev_fake_upstream.py   本地假供应商，测试用，不需要 API 密钥
     README.md              面向使用者的文档
-    pyproject.toml         依赖，用 uv 管理
+    pyproject.toml         依赖 + 打包配置，用 uv 管理
     .env.example           环境变量模板
 
 ## 跑起来
@@ -26,6 +28,45 @@
 
     uv run uvicorn dev_fake_upstream:app --port 9001
     UPSTREAM_BASE_URL=http://127.0.0.1:9001/v1 uv run uvicorn main:app --port 8000
+
+装成 uv tool（在任意目录用 `llm-proxy` 启动，命令细节见 README）：
+
+    uv tool install --editable .
+    llm-proxy --help
+
+## 打包成 uv tool
+
+`uv tool install` 会按 pyproject.toml 打一个 wheel 装进隔离环境，入口来自 `[project.scripts]`：
+
+    llm-proxy                ->  cli:main             启动代理
+    llm-proxy-fake-upstream  ->  cli:fake_upstream    启动假供应商
+
+打包用 hatchling，根目录那几个 .py 靠 `[tool.hatch.build.targets.wheel]` 的 `only-include`
+点名（项目没有 src 布局，hatchling 默认会去找叫 llm_proxy 的目录，找不到就报错）。
+**不变式**：根目录新增或改名模块时，`only-include` 要同步，否则装出来的工具里缺文件
+（报了 `ModuleNotFoundError` 就先查这里）。
+
+改了 `cli.py` 之后重新装一次：
+
+    uv tool install --force --editable .
+
+## 模型调用器与用户配置文件
+
+`model_caller.py` 的 `ModelCaller` 是独立的 HTTP 客户端：给一个 `provider_id` 和一组调用参数，
+直接请求供应商的 `/chat/completions`，原生响应（包括错误响应）原样返回。
+
+供应商配置不在仓库里，在用户配置文件 `~/.llm-proxy.yaml`（每个用户一份），存在 `providers` 段，
+key 是 provider_id：
+
+    providers:
+      deepseek:
+        base_url: https://api.deepseek.com/v1
+        api_key: sk-xxx
+        type: DeepSeek
+
+`ModelCaller()` 构造时用 `load_providers()` 读这个文件（路径固定在 `~/.llm-proxy.yaml`）；
+文件或 `providers` 段缺失时抛 `ValueError`。`type` 决定请求体怎么重写，目前只认 `DeepSeek`
+一个值（reasoning_effort 转 thinking，规则和 `rewrite.py` 一样）；其它值原样透传，不重写。
 
 ## 代码规范
 
@@ -138,3 +179,5 @@
     改请求体字段拆分    main.py 那三处 + rewrite.py 的 ProxyRequest 一起改
     改转发行为          main.py  ->  upstream_headers / response_headers / relay
     加新接口            main.py，照 /v1/models 的写法
+    加命令行入口        cli.py + pyproject.toml 的 [project.scripts]，别忘 only-include
+    改模型调用器        model_caller.py（供应商配置在 ~/.llm-proxy.yaml）

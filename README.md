@@ -16,6 +16,8 @@
 
     uv sync                   # 创建 .venv，并按 uv.lock 精确安装依赖
 
+想把它当成命令行工具、在任意目录启动，见下面「装成 uv tool」一节。
+
 ## 启动
 
     cp .env.example .env      # 填好 UPSTREAM_BASE_URL / UPSTREAM_API_KEY
@@ -38,6 +40,36 @@
 
     from openai import OpenAI
     client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="随便填")
+
+## 装成 uv tool
+
+装成 uv tool 之后，代码进一个独立的虚拟环境，命令放进 `~/.local/bin`，在任何目录都能启动，
+和项目里的 `.venv` 互不影响：
+
+    uv tool install --editable .      # 推荐：改了 rewrite.py 重启一下就生效
+    llm-proxy                         # 默认 127.0.0.1:8000
+
+    llm-proxy --port 9000
+    llm-proxy --host 0.0.0.0              # 想让局域网里别的机器连进来
+    llm-proxy --reload                    # 改代码自动重启
+    llm-proxy --env-file ~/proxy.env      # 配置不在当前目录时，指定 .env 的路径
+
+不写 `--env-file` 的话，`main.py` 里的 `load_dotenv` 会读当前工作目录（以及上级目录）的
+`.env` —— 你在哪个目录启动，就读哪个目录的配置。
+
+不想和源码目录绑定（比如以后把仓库挪走也要能用），去掉 `--editable`，装一份代码快照：
+
+    uv tool install .                 # 冻结当前代码
+    uv tool install --force .         # 改完代码后要重新装一次才生效
+    uv tool uninstall llm-proxy       # 卸载
+
+Windows 上重新安装之前，先把正在跑的 `llm-proxy` 关掉，否则 `Scripts` 目录被占用，
+会报 `os error 5（拒绝访问）`。
+
+假供应商也一起装了，不接真实上游时可以直接冒烟测试：
+
+    llm-proxy-fake-upstream           # 默认 127.0.0.1:9001
+    UPSTREAM_BASE_URL=http://127.0.0.1:9001/v1 llm-proxy
 
 ## 重写逻辑
 
