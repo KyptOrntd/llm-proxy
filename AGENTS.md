@@ -83,37 +83,6 @@ key 是 provider_id：
 拆成 供应商id 和 模型id 再发 —— 所以模型 id 里允许再带 `/`。`main.py` 的聊天入口只认
 逻辑模型：`model` 不在 `models` 段里就直接 400。
 
-## 请求流程
-
-入口是 `main.py` 的 `chat_completions`：
-
-    解析 JSON
-      -> validate_chat_request    校验，不合法直接 400
-      -> build_proxy_request      把请求体拆成 ProxyRequest
-      -> rewrite_request          重写（在 rewrite.py 里）
-      -> 查逻辑模型                model 不在 models 段里就直接 400
-      -> call_logical             调用器每次随机挑一个 供应商id/模型id 发出去
-      -> 回传响应（流式 / 非流式）
-
-## ProxyRequest 的形状
-
-`rewrite.py` 里只暴露请求体里这五个字段：
-
-    req.model             body["model"]
-    req.messages          body["messages"]
-    req.reasoning_effort  body["reasoning_effort"]，None 表示这个参数不发给上游
-    req.stream            body["stream"]
-    req.extra             其余所有字段（temperature、tools、max_tokens ...）
-
-`req.reasoning_effort = None` 的语义是「这个参数不发给上游」，由 `main.py` 转成
-`"none"` 交给调用器（调用器对 DeepSeek 类供应商会翻成 thinking）。
-
-**不变式**：`main.py` 的 `PROXY_REQUEST_FIELDS` 必须和 `ProxyRequest` 的字段一一对应。
-改了一边另一边要同步。涉及两处联动：
-
-    main.py    PROXY_REQUEST_FIELDS
-    main.py    build_proxy_request
-
 ## 转发层的坑（都踩过，别改回去）
 
 1. **读超时必须设成 None**。生成时两个 token 之间可能隔好几分钟，
@@ -135,40 +104,3 @@ key 是 provider_id：
 
 6. **客户端断开时要在 `finally` 里 `aclose()` 上游响应**，否则连接池会泄漏。
    见 `relay()`。
-
-## 测试
-
-`dev_fake_upstream.py` 会把代理实际发过去的整个请求体 echo 回来（messages 只显示条数）。
-所以重写有没有生效，直接看模型输出就知道 —— 哪个键被删了、哪个键多出来了，一眼可见。
-
-先在 `~/.llm-proxy.yaml` 里把假上游配成一个 provider、再配个逻辑模型指过去：
-
-    providers:
-      fake:
-        base_url: http://127.0.0.1:9001/v1
-    models:
-      my-model:
-        - fake/fake-model
-
-- 消息里带上 `BOOM` → 假上游返回 400，用来测错误转发分支
-- 端口：假上游 9001，代理 8000
-- 想看代理发出去的完整请求体：
-
-      curl -s http://127.0.0.1:8000/v1/chat/completions \
-        -H 'Content-Type: application/json' \
-        -d '{"model":"my-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}'
-
-- 想验证「随机挑选」：`models` 里配两个候选，多发几次请求，看假上游 echo 回来的
-  `model` 是不是在变
-
-## 常见改动改哪里
-
-    加校验规则          main.py  ->  validate_chat_request
-    加重写规则          rewrite.py  ->  rewrite_request
-    改请求体字段拆分    main.py 那两处 + rewrite.py 的 ProxyRequest 一起改
-    改逻辑模型/挑选规则  config.py 的 models 段 + model_caller.py 的 call_logical
-    改转发行为          main.py  ->  upstream_headers / response_headers / relay
-    加新接口            main.py，照 /v1/models 的写法
-    加命令行入口        cli.py + pyproject.toml 的 [project.scripts]，别忘 only-include
-    改配置解析          config.py  ->  load_config / 全局 CONFIG
-    改模型调用器        model_caller.py（配置来自 config.py 的 CONFIG；请求体怎么重写看 type）
