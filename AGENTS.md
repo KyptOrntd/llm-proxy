@@ -83,28 +83,6 @@ key 是 provider_id：
 拆成 供应商id 和 模型id 再发 —— 所以模型 id 里允许再带 `/`。`main.py` 的聊天入口只认
 逻辑模型：`model` 不在 `models` 段里就直接 400。
 
-## 代码规范
-
-作者是中文母语者，读英文吃力。下面几条必须遵守。
-
-1. **注释和 docstring 写中文，但要精简。** 一两行说清就行，别写大段解释性文字。
-   变量名、函数名、技术名词（httpx、SSE、content-type 这类）保持英文。
-
-2. **只用基础 Python 语法：**
-   - 不用推导式，写显式的 `for` 加 `if ... continue`
-   - 不用 f-string，用 `+` 拼接字符串
-   - 不用字典解包 `{**a, ...}`，显式逐个赋值
-   - 类型标注从简，写 `dict` 而不是 `dict[str, str]`
-   - 例外：dataclass 的字段必须带标注（dataclasses 的要求），`rewrite.py` 因此
-     保留了 `from __future__ import annotations`，用来支持 `str | None` 这种写法
-   - 例外：`config.py` 的 dataclass 是用户点名要的写法，字段保留精确类型
-     （`providers: dict[str, ProviderConfig]`），别简化成 `dict`
-
-3. **分层严格：**
-   - 请求体校验 → `main.py` 的 `validate_chat_request`
-   - 请求体重写 → `rewrite.py` 的 `rewrite_request`
-   - 不要让重写钩子承担校验职责，也不要把校验混进重写逻辑
-
 ## 请求流程
 
 入口是 `main.py` 的 `chat_completions`：

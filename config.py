@@ -1,18 +1,10 @@
-"""配置解析：读用户配置文件 ~/.llm-proxy.yaml，对外提供全局配置对象 CONFIG。
-
-providers 段的 key 是 provider_id；models 段的 key 是逻辑模型 id，
-值是「供应商id/模型id」格式的列表。文件或 providers 段缺失时抛 ValueError。
-"""
-
-from __future__ import annotations
-
 import os
 from dataclasses import dataclass
 from typing import Literal
 
 import yaml
 
-# 用户配置文件路径，固定在用户主目录下。
+# 配置文件路径
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".llm-proxy.yaml")
 
 
@@ -25,49 +17,67 @@ class ProviderConfig:
 
 
 @dataclass
-class Config:
+class ServerConfig:
+    host: str = "127.0.0.1"
+    port: int = 9251
+
+
+@dataclass
+class LLMProxyConfig:
     providers: dict[str, ProviderConfig]
     models: dict[str, list[str]]
+    server: ServerConfig
 
 
-def load_config(path: str = CONFIG_PATH) -> Config:
-    if not os.path.isfile(path):
-        raise ValueError("找不到用户配置文件：" + path)
-    with open(path, "r", encoding="utf-8") as f:
+def parse_config() -> LLMProxyConfig:
+    if not os.path.isfile(CONFIG_PATH):
+        raise ValueError(f"配置文件 {CONFIG_PATH} 不存在")
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
-    raw_providers = None
-    if isinstance(data, dict):
-        raw_providers = data.get("providers")
-    if not isinstance(raw_providers, dict):
-        raise ValueError("用户配置文件里没有 providers 段：" + path)
-    providers = {}
-    for provider_id in raw_providers:
-        item = raw_providers[provider_id]
+
+    # 解析服务器配置
+    server: ServerConfig = ServerConfig()
+    _server = data.get("server")
+    if _server is not None:
+        if _server.get("host") is not None:
+            server.host = _server.get("host")
+        if _server.get("port") is not None:
+            server.port = _server.get("port")
+
+    # 解析模型供应商配置
+    providers: dict[str, ProviderConfig] = {}
+    _providers = data.get("providers")
+    for provider_id in _providers:
+        item = _providers[provider_id]
         providers[provider_id] = ProviderConfig(
             base_url=item["base_url"],
             api_key=item.get("api_key"),
             type=item.get("type"),
+            name=item.get("name")
         )
-    # models 段可选：不配就是空表；配了就必须是「逻辑模型id -> 列表」。
-    raw_models = None
-    if isinstance(data, dict):
-        raw_models = data.get("models")
-    models = {}
-    if raw_models is not None:
-        if not isinstance(raw_models, dict):
-            raise ValueError("用户配置文件里的 models 段必须是「逻辑模型id -> 列表」的映射：" + path)
-        for model_id in raw_models:
-            targets = raw_models[model_id]
-            if not isinstance(targets, list) or not targets:
-                raise ValueError("逻辑模型 " + repr(model_id) + " 的值必须是非空列表：" + path)
-            for target in targets:
-                if not isinstance(target, str) or "/" not in target:
-                    raise ValueError(
-                        "逻辑模型 " + repr(model_id) + " 的条目必须是「供应商id/模型id」格式：" + str(target)
-                    )
-            models[model_id] = targets
-    return Config(providers=providers, models=models)
+
+    # 解析逻辑模型配置
+    models: dict[str, list[str]] = {}
+    _models = data.get("models")
+    for model_id in _models:
+        models[model_id] = _models[model_id]
+
+    return LLMProxyConfig(
+        providers=providers,
+        models=models,
+        server=server
+    )
 
 
-# 全局配置对象：模块导入时读一次配置文件。
-CONFIG: Config = load_config()
+def validate_config(config: LLMProxyConfig) -> None:
+    # 模型不能引用不存在的供应商 ID
+    for model_id in config.models:
+        for entry in config.models[model_id]:
+            provider_id = entry.split("/", 1)[0]
+            if provider_id in config.providers:
+                continue
+            raise ValueError(f"模型 {model_id} 引用了不存在的供应商 ID：{provider_id}")
+
+
+CONFIG: LLMProxyConfig = parse_config()
+validate_config(CONFIG)

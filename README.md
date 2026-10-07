@@ -60,11 +60,19 @@
       my-model:                     # 客户端请求里填的 model 就是它
         - deepseek/deepseek-chat
         - siliconflow/deepseek-ai/DeepSeek-V3
+    server:                         # 可选：llm-proxy 命令的监听地址
+      host: 0.0.0.0
+      port: 8000
 
 - `providers`：key 是供应商 id；`base_url` 必填，`api_key` 可选（配上就用它发请求）
 - `models`：key 是逻辑模型 id，值是「供应商id/模型id」列表；每次请求都随机挑一个条目来用，
   条目按第一个 `/` 拆分 —— 所以模型 id 里再带 `/`（比如 `deepseek-ai/DeepSeek-V3`）也没问题
 - 请求的 `model` 不在 `models` 段里 → 直接返回 400，代理不会转发没配过的模型
+- `server`：可选，只给装成 uv tool 的 `llm-proxy` 命令用 —— 命令行没传 `--host` / `--port` 时
+  从这里取监听地址（优先级：命令行 > server 段 > 内置默认 127.0.0.1:8000）；
+  `llm-proxy-fake-upstream` 和直接 `uv run uvicorn` 都不读这一段
+- `models` 里引用的供应商 id 必须先在 `providers` 里配好，引用了不存在的供应商，
+  加载配置的时候就会直接报错（不用等请求进来）
 - 配置文件在模块导入时只读一次，改了要重启代理才生效
 
 ## 装成 uv tool
@@ -79,6 +87,9 @@
     llm-proxy --host 0.0.0.0              # 想让局域网里别的机器连进来
     llm-proxy --reload                    # 改代码自动重启
     llm-proxy --env-file ~/proxy.env      # 配置不在当前目录时，指定 .env 的路径
+
+不传 `--host` / `--port` 时，先看 `~/.llm-proxy.yaml` 的 `server` 段（见「配置文件」一节），
+那儿也没有才用内置默认的 `127.0.0.1:8000`；命令行上给的参数优先级最高。
 
 不写 `--env-file` 的话，`main.py` 里的 `load_dotenv` 会读当前工作目录（以及上级目录）的
 `.env` —— 你在哪个目录启动，就读哪个目录的配置。
