@@ -3,7 +3,7 @@ name = "llm-proxy"
 version = "0.1.0"
 description = "OpenAI 兼容的聊天补全代理：先按自定义规则重写请求体，再转发给上游供应商"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.115",
     "httpx>=0.27",
@@ -29,6 +29,7 @@ only-include = [
     "main.py",
     "rewrite.py",
     "model_caller.py",
+    "config.py",
     "cli.py",
     "dev_fake_upstream.py",
 ]

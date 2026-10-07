@@ -4,21 +4,25 @@ POST /v1/chat/completions 的处理流程：
     1. 解析客户端发来的 JSON 请求体
     2. 校验请求体（validate_chat_request），不合法直接返回 400
     3. 把请求体拆成 ProxyRequest，交给 rewrite.py 里的重写钩子处理
-    4. 把重写后的字段拼回请求体，转发给真正的模型供应商
-    5. 把响应原样回传给客户端 —— 客户端要流式就给 SSE 流，否则给完整响应
+    4. model 必须是 ~/.llm-proxy.yaml 里 models 段配置的逻辑模型，查不到直接 400
+    5. 命中后由模型调用器随机挑一个「供应商id/模型id」，把请求发出去
+    6. 把响应原样回传给客户端 —— 客户端要流式就给 SSE 流，否则给完整响应
+
+逻辑模型和供应商都来自用户配置文件 ~/.llm-proxy.yaml（由 config.py 解析）。
 
 环境变量（用 python-dotenv 从 .env 读取，也可以用命令行直接传）：
-    UPSTREAM_BASE_URL   供应商 API 根地址，结尾不要带斜杠（默认 https://api.openai.com/v1）
-    UPSTREAM_API_KEY    调用上游时使用的密钥；不设置的话，就把客户端自己的
-                        Authorization 请求头原样转发过去
+    UPSTREAM_BASE_URL    /v1/models 透传接口用的供应商根地址，结尾不要带斜杠
+                         （默认 https://api.openai.com/v1）
+    UPSTREAM_API_KEY     /v1/models 透传时使用的密钥；不设置的话，就把客户端自己的
+                         Authorization 请求头原样转发过去
 
 启动（.env 会自动加载，不需要额外参数）：
     uv run uvicorn main:app --reload --port 8000
 
-冒烟测试：
+冒烟测试（model 填 ~/.llm-proxy.yaml 里配好的逻辑模型 id）：
     curl -N http://127.0.0.1:8000/v1/chat/completions \
-      -H 'Content-Type: application/json' -H 'Authorization: Bearer sk-test' \
-      -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"stream":true}'
+      -H 'Content-Type: application/json' \
+      -d '{"model":"my-model","messages":[{"role":"user","content":"hi"}],"stream":true}'
 """
 
 import inspect
@@ -31,6 +35,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
+from config import CONFIG
+from model_caller import ModelCaller
 from rewrite import ProxyRequest, rewrite_request
 
 # 先把 .env 里的变量读进 os.environ，再读下面这些配置。
@@ -92,19 +98,22 @@ PROXY_REQUEST_FIELDS = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 整个应用共用一个 httpx 客户端，可以复用连接池；应用关闭时统一释放。
+    # /v1/models 透传共用一个 httpx 客户端，可以复用连接池；应用关闭时统一释放。
     app.state.client = httpx.AsyncClient(timeout=TIMEOUT)
+    # 聊天请求都走模型调用器（它内部有自己的客户端）。
+    app.state.caller = ModelCaller()
     try:
         yield
     finally:
         await app.state.client.aclose()
+        await app.state.caller.aclose()
 
 
 app = FastAPI(title="llm-proxy", lifespan=lifespan)
 
 
 def upstream_headers(incoming) -> dict:
-    """复制客户端的请求头，丢掉那些不能转发的。"""
+    """复制客户端的请求头，丢掉那些不能转发的（/v1/models 透传用）。"""
     headers = {}
     for key, value in incoming.items():
         if key.lower() in STRIP_HEADERS:
@@ -163,24 +172,6 @@ def build_proxy_request(body: dict) -> ProxyRequest:
     )
 
 
-def build_request_body(req: ProxyRequest) -> dict:
-    """把重写后的 ProxyRequest 拼回请求体，发给上游。
-
-    reasoning_effort 是 None 时不写进请求体，也就是「这个参数不发给上游」。
-    stream 是 False 时同理 —— 不传 stream 和传 false，对上游来说是一样的。
-    """
-    body = {}
-    for key in req.extra:
-        body[key] = req.extra[key]
-    body["model"] = req.model
-    body["messages"] = req.messages
-    if req.reasoning_effort is not None:
-        body["reasoning_effort"] = req.reasoning_effort
-    if req.stream:
-        body["stream"] = True
-    return body
-
-
 @app.get("/health")
 async def health() -> dict:
     # 用来快速确认服务活着、以及当前指向哪个上游。
@@ -206,15 +197,24 @@ async def chat_completions(request: Request):
         await outcome
     # -------------------------------------------------------------------------
 
-    client = request.app.state.client
+    # 只认逻辑模型：model 不在 models 段里就拒绝。放在重写之后判断，钩子可以改 model。
+    if req.model not in CONFIG.models:
+        raise HTTPException(status_code=400, detail=f"不支持的模型：{req.model}")
+
+    # reasoning_effort 是 None 表示「这个参数不发给上游」，交给调用器时用 "none" 表达。
+    effort = req.reasoning_effort
+    if effort is None:
+        effort = "none"
+
+    caller = request.app.state.caller
     try:
-        upstream_request = client.build_request(
-            "POST",
-            UPSTREAM_BASE_URL + "/chat/completions",
-            headers=upstream_headers(request.headers),
-            json=build_request_body(req),
+        upstream = await caller.call_logical(
+            req.model,
+            req.messages,
+            reasoning_effort=effort,
+            stream=req.stream,
+            **req.extra,
         )
-        upstream = await client.send(upstream_request, stream=True)
     except httpx.RequestError as exc:
         raise HTTPException(status_code=502, detail="请求上游失败：" + str(exc))
 
